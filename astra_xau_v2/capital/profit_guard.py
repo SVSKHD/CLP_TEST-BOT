@@ -1,11 +1,14 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from config.settings import (
     PER_SYMBOL_DAILY_TARGET, DAILY_CAP, DAILY_FLOOR, SYMBOLS,
     PROP_FIRM_MAX_DAILY_DD, PROP_FIRM_MAX_TOTAL_DD, ACCOUNT_EQUITY,
 )
 
 logger = logging.getLogger("astra.profit_guard")
+
+CONSECUTIVE_LOSS_LIMIT = 3
+COOLDOWN_HOURS = 4
 
 
 class ProfitGuard:
@@ -20,6 +23,8 @@ class ProfitGuard:
         self.trade_count = {s: 0 for s in self.symbols}
         self.status = {s: "ACTIVE" for s in self.symbols}
         self.global_status = "ACTIVE"
+        self.consecutive_losses = {s: 0 for s in self.symbols}
+        self.cooldown_until = {s: None for s in self.symbols}
         self._freeze_callbacks = []
         self._cap_callbacks = []
         self._emergency_callbacks = []
@@ -33,7 +38,8 @@ class ProfitGuard:
     def on_emergency_stop(self, callback):
         self._emergency_callbacks.append(callback)
 
-    def update_realized(self, symbol: str, pnl: float, pips: float):
+    def update_realized(self, symbol: str, pnl: float, pips: float,
+                        trade_time: datetime = None):
         if symbol not in self.realized_pnl:
             return
 
@@ -41,9 +47,23 @@ class ProfitGuard:
         self.daily_pips[symbol] += pips
         self.trade_count[symbol] += 1
 
+        # Track consecutive losses for circuit breaker
+        if pnl < 0:
+            self.consecutive_losses[symbol] += 1
+            if self.consecutive_losses[symbol] >= CONSECUTIVE_LOSS_LIMIT:
+                cooldown_end = (trade_time or datetime.utcnow()) + timedelta(hours=COOLDOWN_HOURS)
+                self.cooldown_until[symbol] = cooldown_end
+                logger.warning(
+                    f"PAUSED {symbol}: {CONSECUTIVE_LOSS_LIMIT} consecutive losses, "
+                    f"cooling off {COOLDOWN_HOURS}h until {cooldown_end}"
+                )
+        else:
+            self.consecutive_losses[symbol] = 0
+
         logger.info(
             f"PnL update: {symbol} +${pnl:.2f} ({pips:.1f} pips) | "
-            f"Total: ${self.realized_pnl[symbol]:.2f} | Pips: {self.daily_pips[symbol]:.1f}"
+            f"Total: ${self.realized_pnl[symbol]:.2f} | Pips: {self.daily_pips[symbol]:.1f} | "
+            f"Consec losses: {self.consecutive_losses[symbol]}"
         )
 
         if self.realized_pnl[symbol] >= PER_SYMBOL_DAILY_TARGET and self.status[symbol] == "ACTIVE":
@@ -145,7 +165,7 @@ class ProfitGuard:
     def is_global_active(self) -> bool:
         return self.global_status == "ACTIVE"
 
-    def can_trade(self, symbol: str) -> dict:
+    def can_trade(self, symbol: str, current_time: datetime = None) -> dict:
         if self.global_status in ("EMERGENCY_STOP", "ACCOUNT_BREACH"):
             return {"allowed": False, "reason": f"{self.global_status}: drawdown breach"}
         if self.global_status == "GLOBAL_CAP":
@@ -155,6 +175,16 @@ class ProfitGuard:
         from config.settings import DAILY_PIPS_COVERAGE
         if self.daily_pips.get(symbol, 0) >= DAILY_PIPS_COVERAGE:
             return {"allowed": False, "reason": f"{symbol} hit {DAILY_PIPS_COVERAGE} pip coverage"}
+        # Consecutive loss cooldown check
+        cooldown = self.cooldown_until.get(symbol)
+        if cooldown is not None:
+            now = current_time or datetime.utcnow()
+            if now < cooldown:
+                return {"allowed": False,
+                        "reason": f"{symbol} cooling off until {cooldown} ({self.consecutive_losses[symbol]} consec losses)"}
+            else:
+                self.cooldown_until[symbol] = None
+                self.consecutive_losses[symbol] = 0
         return {"allowed": True, "reason": "OK"}
 
     def check_floor_alert(self) -> dict:
@@ -193,6 +223,7 @@ class ProfitGuard:
             self.daily_pips[s] = 0.0
             self.trade_count[s] = 0
             self.status[s] = "ACTIVE"
+            # Don't reset consecutive_losses or cooldown — they persist across days
         self.global_status = "ACTIVE"
         self.daily_start_equity = self.current_equity
         logger.info("ProfitGuard reset for new day")

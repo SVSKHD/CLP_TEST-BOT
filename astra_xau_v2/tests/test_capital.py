@@ -3,6 +3,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import unittest
+from datetime import datetime, timedelta
 from capital.allocator import calc_lot_size, calc_pip_value
 from capital.profit_guard import ProfitGuard
 
@@ -22,7 +23,9 @@ class TestAllocator(unittest.TestCase):
         self.assertAlmostEqual(pv, 1000.0, places=2)
 
     def test_lot_size_basic(self):
-        lot = calc_lot_size(50000, self.symbol_info, 40, ["XAUUSD"])
+        # Use realistic XAU tick_size=0.1 so pip_value=100 (not 1000)
+        info = {**self.symbol_info, "trade_tick_size": 0.1}
+        lot = calc_lot_size(50000, info, 40, ["XAUUSD"])
         self.assertIsNotNone(lot)
         self.assertGreater(lot, 0)
         self.assertLessEqual(lot, 100.0)
@@ -177,6 +180,41 @@ class TestDrawdownGuard(unittest.TestCase):
         guard.check_drawdown(47000)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0][0], "EMERGENCY_STOP")
+
+
+class TestConsecutiveLossBreaker(unittest.TestCase):
+    def test_3_losses_triggers_cooldown(self):
+        guard = ProfitGuard(["XAUUSD"], initial_equity=50000)
+        t = datetime(2026, 1, 5, 10, 0)
+        guard.update_realized("XAUUSD", -100, 20, trade_time=t)
+        guard.update_realized("XAUUSD", -100, 20, trade_time=t)
+        self.assertTrue(guard.can_trade("XAUUSD", current_time=t)["allowed"])
+
+        guard.update_realized("XAUUSD", -100, 20, trade_time=t)
+        # 3rd consecutive loss — should be paused
+        result = guard.can_trade("XAUUSD", current_time=t)
+        self.assertFalse(result["allowed"])
+        self.assertIn("cooling off", result["reason"])
+
+    def test_win_resets_consecutive_losses(self):
+        guard = ProfitGuard(["XAUUSD"], initial_equity=50000)
+        t = datetime(2026, 1, 5, 10, 0)
+        guard.update_realized("XAUUSD", -100, 20, trade_time=t)
+        guard.update_realized("XAUUSD", -100, 20, trade_time=t)
+        guard.update_realized("XAUUSD", 200, 30, trade_time=t)  # win resets
+        self.assertEqual(guard.consecutive_losses["XAUUSD"], 0)
+        self.assertTrue(guard.can_trade("XAUUSD", current_time=t)["allowed"])
+
+    def test_cooldown_expires(self):
+        guard = ProfitGuard(["XAUUSD"], initial_equity=50000)
+        t = datetime(2026, 1, 5, 10, 0)
+        for _ in range(3):
+            guard.update_realized("XAUUSD", -100, 20, trade_time=t)
+        # During cooldown
+        self.assertFalse(guard.can_trade("XAUUSD", current_time=t)["allowed"])
+        # After 4 hours
+        after = t + timedelta(hours=5)
+        self.assertTrue(guard.can_trade("XAUUSD", current_time=after)["allowed"])
 
 
 if __name__ == "__main__":

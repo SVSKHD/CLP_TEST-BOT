@@ -31,105 +31,58 @@ class HawkFilter(BaseFilter):
 
         ema50 = calc_ema(df["close"], 50)
         ema50_current = ema50.iloc[-1]
-        ema50_prev = ema50.iloc[-2]
         close_current = df["close"].iloc[-1]
-        close_prev = df["close"].iloc[-2]
 
-        ema_cross_up = close_prev < ema50_prev and close_current > ema50_current
-        ema_cross_down = close_prev > ema50_prev and close_current < ema50_current
-        price_above_ema = close_current > ema50_current
-        price_below_ema = close_current < ema50_current
+        atr14 = calc_atr(df, 14)
+        atr_val = atr14.iloc[-1]
+        atr_pips = atr_val * 10
 
-        # Regime detection: % of last 50 candles closing above EMA50
-        lookback = min(50, len(df))
-        recent_close = df["close"].iloc[-lookback:]
-        recent_ema = ema50.iloc[-lookback:]
-        above_pct = (recent_close.values > recent_ema.values).sum() / lookback * 100
-        if above_pct > 75:
+        # Dead market check
+        atr_threshold = ATR_DEAD_MARKET_PIPS_BT if self.mode == "backtest" else ATR_DEAD_MARKET_PIPS_LIVE
+        if atr_val > 0 and atr_pips < atr_threshold:
+            return FilterResult(FilterResult.REJECT,
+                                f"Dead market: ATR={atr_pips:.1f} pips < {atr_threshold}")
+
+        # Regime detection using current price position relative to EMA50
+        if atr_val > 0:
+            bull_strength = (close_current - ema50_current) / atr_val
+        else:
+            bull_strength = 0.0
+
+        if bull_strength > 0.5:
             regime = "BULL"
-        elif above_pct < 25:
+        elif bull_strength < -0.5:
             regime = "BEAR"
         else:
             regime = "RANGING"
 
         logger.info(
-            f"Hawk {self.symbol}: regime={regime} ({above_pct:.0f}% above EMA50), "
-            f"signal={signal.direction}, price={close_current:.2f}, ema50={ema50_current:.2f}"
+            f"Hawk {self.symbol}: regime={regime} (strength={bull_strength:.2f}), "
+            f"signal={signal.direction}, price={close_current:.2f}, "
+            f"ema50={ema50_current:.2f}, ATR={atr_pips:.1f}"
         )
 
-        # In trending regimes, counter-trend signals need high confidence
+        # Regime enforcement
         if regime == "BULL" and signal.direction == "SELL":
-            if signal.confidence >= 0.65:
-                logger.info(f"Hawk {self.symbol}: allowing counter-trend SELL in BULL (conf={signal.confidence:.2f})")
-            else:
-                return FilterResult(FilterResult.REJECT,
-                                    f"SELL rejected: BULL regime ({above_pct:.0f}% above EMA50), low conf={signal.confidence:.2f}")
+            return FilterResult(FilterResult.REJECT,
+                                f"SELL rejected: BULL regime (strength={bull_strength:.2f})")
+
         if regime == "BEAR" and signal.direction == "BUY":
-            if signal.confidence >= 0.65:
-                logger.info(f"Hawk {self.symbol}: allowing counter-trend BUY in BEAR (conf={signal.confidence:.2f})")
-            else:
-                return FilterResult(FilterResult.REJECT,
-                                    f"BUY rejected: BEAR regime ({above_pct:.0f}% above EMA50), low conf={signal.confidence:.2f}")
+            return FilterResult(FilterResult.REJECT,
+                                f"BUY rejected: BEAR regime (strength={bull_strength:.2f})")
 
-        h1_df = self._resample_h1(df)
-        if len(h1_df) >= 14:
-            atr_h1 = calc_atr(h1_df, 14)
-            atr_val = atr_h1.iloc[-1]
-            atr_pips = atr_val * 10
+        if regime == "RANGING" and signal.confidence < 0.65:
+            return FilterResult(FilterResult.REJECT,
+                                f"{signal.direction} rejected: RANGING regime, low conf={signal.confidence:.2f}")
 
-            atr_threshold = ATR_DEAD_MARKET_PIPS_BT if self.mode == "backtest" else ATR_DEAD_MARKET_PIPS_LIVE
-            if atr_pips < atr_threshold:
-                return FilterResult(FilterResult.REJECT,
-                                    f"Dead market: ATR(H1)={atr_pips:.1f} pips < {atr_threshold}")
-        else:
-            atr_pips = 0
-
-        # In RANGING regime, the scalper's mean-reversion signals are valid
-        # regardless of EMA position — confirm if ATR shows the market is alive
-        if regime == "RANGING":
-            return FilterResult(FilterResult.CONFIRM,
-                                f"{signal.direction} confirmed: RANGING regime, mean-reversion OK, ATR={atr_pips:.1f}")
-
-        # In trending regimes (BULL/BEAR), require EMA alignment for trend-with entries
-        if len(h1_df) >= 14:
-            h1_ema50 = calc_ema(h1_df["close"], min(50, len(h1_df) - 1))
-            h1_trend_up = h1_df["close"].iloc[-1] > h1_ema50.iloc[-1]
-            h1_trend_down = h1_df["close"].iloc[-1] < h1_ema50.iloc[-1]
-        else:
-            h1_trend_up = True
-            h1_trend_down = True
-
-        if signal.direction == "BUY":
-            if (ema_cross_up or price_above_ema) and h1_trend_up:
-                return FilterResult(FilterResult.CONFIRM,
-                                    f"BUY confirmed: {regime} regime, M15 EMA50 bullish, H1 trend up, ATR={atr_pips:.1f}")
-            elif price_above_ema:
-                return FilterResult(FilterResult.CONFIRM,
-                                    f"BUY confirmed: {regime} regime, price above EMA50, ATR={atr_pips:.1f}")
-            else:
-                return FilterResult(FilterResult.REJECT,
-                                    f"BUY rejected: price below EMA50 ({close_current:.2f} < {ema50_current:.2f}), {regime}")
-
-        elif signal.direction == "SELL":
-            if (ema_cross_down or price_below_ema) and h1_trend_down:
-                return FilterResult(FilterResult.CONFIRM,
-                                    f"SELL confirmed: {regime} regime, M15 EMA50 bearish, H1 trend down, ATR={atr_pips:.1f}")
-            elif price_below_ema:
-                return FilterResult(FilterResult.CONFIRM,
-                                    f"SELL confirmed: {regime} regime, price below EMA50, ATR={atr_pips:.1f}")
-            else:
-                return FilterResult(FilterResult.REJECT,
-                                    f"SELL rejected: price above EMA50 ({close_current:.2f} > {ema50_current:.2f}), {regime}")
-
-        return FilterResult(FilterResult.MONITOR, "Unknown direction")
+        # Signal aligns with regime — confirm
+        return FilterResult(FilterResult.CONFIRM,
+                            f"{signal.direction} confirmed: {regime} regime, "
+                            f"strength={bull_strength:.2f}, ATR={atr_pips:.1f}")
 
     def _in_session(self, df: pd.DataFrame) -> bool:
         last_time = df["time"].iloc[-1]
-        if isinstance(last_time, pd.Timestamp):
-            hour = last_time.hour
-        else:
-            hour = last_time.hour
-
+        hour = last_time.hour
         if LONDON_START <= hour < LONDON_END:
             return True
         if NY_START <= hour < NY_END:
