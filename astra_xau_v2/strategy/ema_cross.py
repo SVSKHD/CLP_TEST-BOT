@@ -16,7 +16,7 @@ EMA_FAST = 8
 EMA_SLOW = 21
 EMA_HTF = 50
 ATR_PERIOD = 14
-ATR_MIN_PIPS = 25
+ATR_MIN_PIPS = 18
 RANGING_PIPS = 5
 RANGING_LOOKBACK = 3
 SL_ATR_MULT = 1.5
@@ -24,12 +24,12 @@ TP_ATR_MULT = 2.5
 SL_MAX_PIPS = 80
 SL_MIN_PIPS = 25
 MIN_RR = 1.5
-MAX_TRADES_PER_DAY = 2
+MAX_TRADES_PER_DAY = 3
 
 LONDON_START = 7
 LONDON_END = 12
 NY_START = 13
-NY_END = 17
+NY_END = 18.5  # 18:30 GMT
 
 
 class EMACrossStrategy:
@@ -37,7 +37,9 @@ class EMACrossStrategy:
         self.symbol = symbol
         self.mode = mode
         self._daily_trades = 0
+        self._daily_pnl = 0.0
         self._current_date = None
+        self._last_cross_direction = None  # track last confirmed cross for re-entry
 
     def generate_signal(self, df: pd.DataFrame, current_time: datetime = None) -> Optional[Signal]:
         if len(df) < 60:
@@ -49,14 +51,20 @@ class EMACrossStrategy:
         if candle_date and candle_date != self._current_date:
             self._current_date = candle_date
             self._daily_trades = 0
+            self._daily_pnl = 0.0
 
+        # 3rd trade only allowed if daily PnL is positive
         if self._daily_trades >= MAX_TRADES_PER_DAY:
+            return None
+        if self._daily_trades == MAX_TRADES_PER_DAY - 1 and self._daily_pnl <= 0:
             return None
 
         # Session filter (skip in backtest — synthetic data has no TZ context)
         if self.mode != "backtest":
             hour = candle_time.hour if hasattr(candle_time, "hour") else 0
-            if not (LONDON_START <= hour < LONDON_END or NY_START <= hour < NY_END):
+            minute = candle_time.minute if hasattr(candle_time, "minute") else 0
+            time_frac = hour + minute / 60.0
+            if not (LONDON_START <= time_frac < LONDON_END or NY_START <= time_frac < NY_END):
                 return None
 
         # News filter
@@ -94,10 +102,19 @@ class EMACrossStrategy:
         cross_up = ema8_prev <= ema21_prev and ema8_now > ema21_now
         cross_down = ema8_prev >= ema21_prev and ema8_now < ema21_now
 
-        if not cross_up and not cross_down:
+        signal_source = "cross"
+        if cross_up:
+            direction = "BUY"
+            self._last_cross_direction = "BUY"
+        elif cross_down:
+            direction = "SELL"
+            self._last_cross_direction = "SELL"
+        elif self._last_cross_direction and self._check_pullback_reentry(
+                df, ema8, ema21, self._last_cross_direction):
+            direction = self._last_cross_direction
+            signal_source = "pullback_reentry"
+        else:
             return None
-
-        direction = "BUY" if cross_up else "SELL"
 
         # H1 trend filter
         h1 = self._resample_h1(df)
@@ -144,7 +161,7 @@ class EMACrossStrategy:
         tp_pips = round(tp_pips, 1)
 
         reason = (
-            f"EMA{EMA_FAST}/{EMA_SLOW} cross {direction.lower()}, "
+            f"EMA{EMA_FAST}/{EMA_SLOW} {signal_source} {direction.lower()}, "
             f"H1>{EMA_HTF}EMA {'up' if direction == 'BUY' else 'down'}, "
             f"ATR={atr_pips:.0f}p, SL={sl_pips:.0f}p, TP={tp_pips:.0f}p"
         )
@@ -165,6 +182,33 @@ class EMACrossStrategy:
 
         logger.info(f"EMA cross signal: {signal}")
         return signal
+
+    def update_trade_result(self, pnl: float):
+        """Called after a trade closes to update daily PnL for the 3rd-trade guard."""
+        self._daily_pnl += pnl
+
+    def _check_pullback_reentry(self, df: pd.DataFrame, ema8: pd.Series,
+                                ema21: pd.Series, direction: str) -> bool:
+        """
+        After a confirmed EMA cross, if price pulls back to touch EMA8
+        within the last 4 candles and trend is still intact — valid re-entry.
+        """
+        if len(df) < 5:
+            return False
+        last_4_idx = slice(-5, -1)
+        ema8_now = ema8.iloc[-1]
+        ema21_now = ema21.iloc[-1]
+        price_now = df["close"].iloc[-1]
+
+        if direction == "BUY":
+            touched_ema8 = any(df["low"].iloc[last_4_idx].values <= ema8.iloc[last_4_idx].values * 1.0005)
+            still_above_ema21 = price_now > ema21_now
+            return touched_ema8 and still_above_ema21
+        elif direction == "SELL":
+            touched_ema8 = any(df["high"].iloc[last_4_idx].values >= ema8.iloc[last_4_idx].values * 0.9995)
+            still_below_ema21 = price_now < ema21_now
+            return touched_ema8 and still_below_ema21
+        return False
 
     def _resample_h1(self, df: pd.DataFrame) -> pd.DataFrame:
         d = df.copy().set_index("time")

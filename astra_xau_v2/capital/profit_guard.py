@@ -10,6 +10,13 @@ logger = logging.getLogger("astra.profit_guard")
 CONSECUTIVE_LOSS_LIMIT = 3
 COOLDOWN_HOURS = 4
 
+# --- New guard thresholds ---
+DAILY_DD_HALT_PCT = 0.03          # 3% equity drop from session open → halt new entries
+PEAK_DD_EMERGENCY_PCT = 0.045     # 4.5% drop from account equity peak → emergency stop
+DAILY_LOSS_CAP_USD = 1500         # hard USD daily loss cap
+CONSECUTIVE_LOSS_HALT = 3         # pause trading for 2 hours after 3 consecutive losses
+CONSECUTIVE_LOSS_PAUSE_MINUTES = 120
+
 
 class ProfitGuard:
     def __init__(self, symbols: list = None, initial_equity: float = None):
@@ -25,6 +32,13 @@ class ProfitGuard:
         self.global_status = "ACTIVE"
         self.consecutive_losses = {s: 0 for s in self.symbols}
         self.cooldown_until = {s: None for s in self.symbols}
+        # New guard state
+        self.session_open_equity = self.initial_equity
+        self.account_peak_equity = self.initial_equity
+        self.daily_loss_usd = 0.0
+        self.halt_new_entries = False
+        self.emergency_stop = False
+        self.consec_loss_pause_until = None
         self._freeze_callbacks = []
         self._cap_callbacks = []
         self._emergency_callbacks = []
@@ -60,11 +74,18 @@ class ProfitGuard:
         else:
             self.consecutive_losses[symbol] = 0
 
+        # Track daily loss for USD cap
+        if pnl < 0:
+            self.daily_loss_usd += abs(pnl)
+
         logger.info(
             f"PnL update: {symbol} +${pnl:.2f} ({pips:.1f} pips) | "
             f"Total: ${self.realized_pnl[symbol]:.2f} | Pips: {self.daily_pips[symbol]:.1f} | "
-            f"Consec losses: {self.consecutive_losses[symbol]}"
+            f"Consec losses: {self.consecutive_losses[symbol]} | Day loss: ${self.daily_loss_usd:.2f}"
         )
+
+        # Run guard checks after every trade close
+        self.run_guard_checks(equity=self.current_equity, current_time=trade_time)
 
         if self.realized_pnl[symbol] >= PER_SYMBOL_DAILY_TARGET and self.status[symbol] == "ACTIVE":
             self.status[symbol] = "FROZEN"
@@ -93,6 +114,73 @@ class ProfitGuard:
 
     def update_floating(self, symbol: str, floating: float):
         self.floating_pnl[symbol] = floating
+
+    def is_halted(self) -> bool:
+        """Daily DD halt or loss cap reached — no new entries today."""
+        return self.halt_new_entries
+
+    def is_emergency_stopped(self) -> bool:
+        """Peak DD emergency — manual reset required."""
+        return self.emergency_stop
+
+    def is_paused(self, current_time: datetime = None) -> bool:
+        """Consecutive loss pause active."""
+        if self.consec_loss_pause_until is None:
+            return False
+        now = current_time or datetime.utcnow()
+        if now >= self.consec_loss_pause_until:
+            self.consec_loss_pause_until = None
+            return False
+        return True
+
+    def run_guard_checks(self, equity: float = None, current_time: datetime = None):
+        """Run all new guard checks on every trade close or equity poll."""
+        eq = equity if equity is not None else self.current_equity
+        now = current_time or datetime.utcnow()
+
+        # Update peak equity
+        if eq > self.account_peak_equity:
+            self.account_peak_equity = eq
+
+        # 1) Daily DD halt (3% from session open)
+        if self.session_open_equity > 0:
+            daily_dd = (self.session_open_equity - eq) / self.session_open_equity
+            if daily_dd >= DAILY_DD_HALT_PCT and not self.halt_new_entries:
+                self.halt_new_entries = True
+                logger.warning(
+                    f"DAILY DD HALT: {daily_dd*100:.2f}% drop from session open "
+                    f"${self.session_open_equity:,.2f} → ${eq:,.2f}"
+                )
+
+        # 2) Peak DD emergency (4.5% from peak)
+        if self.account_peak_equity > 0:
+            peak_dd = (self.account_peak_equity - eq) / self.account_peak_equity
+            if peak_dd >= PEAK_DD_EMERGENCY_PCT and not self.emergency_stop:
+                self.emergency_stop = True
+                logger.critical(
+                    f"PEAK DD EMERGENCY STOP: {peak_dd*100:.2f}% drop from peak "
+                    f"${self.account_peak_equity:,.2f} → ${eq:,.2f} — manual reset required"
+                )
+                for cb in self._emergency_callbacks:
+                    try:
+                        cb("PEAK_DD_EMERGENCY", eq, peak_dd * 100)
+                    except Exception as e:
+                        logger.error(f"Emergency callback error: {e}")
+
+        # 3) Daily loss cap (USD)
+        if self.daily_loss_usd >= DAILY_LOSS_CAP_USD and not self.halt_new_entries:
+            self.halt_new_entries = True
+            logger.warning(f"DAILY LOSS CAP: ${self.daily_loss_usd:,.2f} >= ${DAILY_LOSS_CAP_USD}")
+
+        # 4) Consecutive loss pause (2 hours)
+        # (uses global consecutive loss counter across all symbols)
+        total_consec = max(self.consecutive_losses.values()) if self.consecutive_losses else 0
+        if total_consec >= CONSECUTIVE_LOSS_HALT and self.consec_loss_pause_until is None:
+            self.consec_loss_pause_until = now + timedelta(minutes=CONSECUTIVE_LOSS_PAUSE_MINUTES)
+            logger.warning(
+                f"CONSECUTIVE LOSS PAUSE: {total_consec} losses — "
+                f"pausing {CONSECUTIVE_LOSS_PAUSE_MINUTES}min until {self.consec_loss_pause_until}"
+            )
 
     def check_drawdown(self, equity: float = None) -> dict:
         eq = equity if equity is not None else self.current_equity
@@ -148,7 +236,11 @@ class ProfitGuard:
         return {"breach": False}
 
     def start_new_day(self, equity: float = None):
-        self.daily_start_equity = equity if equity is not None else self.current_equity
+        eq = equity if equity is not None else self.current_equity
+        self.daily_start_equity = eq
+        self.session_open_equity = eq
+        self.halt_new_entries = False
+        self.daily_loss_usd = 0.0
 
     def total_realized(self) -> float:
         return sum(self.realized_pnl.values())
@@ -166,6 +258,14 @@ class ProfitGuard:
         return self.global_status == "ACTIVE"
 
     def can_trade(self, symbol: str, current_time: datetime = None) -> dict:
+        # New guard checks first
+        if self.is_emergency_stopped():
+            return {"allowed": False, "reason": "PEAK DD emergency stop — manual reset required"}
+        if self.is_halted():
+            return {"allowed": False, "reason": "Daily DD halt or loss cap — no new entries today"}
+        if self.is_paused(current_time):
+            return {"allowed": False, "reason": "Consecutive loss pause active"}
+        # Existing checks
         if self.global_status in ("EMERGENCY_STOP", "ACCOUNT_BREACH"):
             return {"allowed": False, "reason": f"{self.global_status}: drawdown breach"}
         if self.global_status == "GLOBAL_CAP":
@@ -175,7 +275,7 @@ class ProfitGuard:
         from config.settings import DAILY_PIPS_COVERAGE
         if self.daily_pips.get(symbol, 0) >= DAILY_PIPS_COVERAGE:
             return {"allowed": False, "reason": f"{symbol} hit {DAILY_PIPS_COVERAGE} pip coverage"}
-        # Consecutive loss cooldown check
+        # Consecutive loss cooldown check (per-symbol)
         cooldown = self.cooldown_until.get(symbol)
         if cooldown is not None:
             now = current_time or datetime.utcnow()
@@ -226,6 +326,10 @@ class ProfitGuard:
             # Don't reset consecutive_losses or cooldown — they persist across days
         self.global_status = "ACTIVE"
         self.daily_start_equity = self.current_equity
+        # Reset daily guards (but NOT emergency_stop — that requires manual reset)
+        self.halt_new_entries = False
+        self.daily_loss_usd = 0.0
+        self.session_open_equity = self.current_equity
         logger.info("ProfitGuard reset for new day")
 
     def to_dict(self) -> dict:

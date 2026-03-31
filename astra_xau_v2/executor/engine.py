@@ -85,6 +85,27 @@ class TradingEngine:
             self._seek_entry_live()
 
     def _seek_entry_live(self):
+        # Pre-flight: risk guard checks
+        if self.profit_guard.is_emergency_stopped():
+            logger.warning("BLOCKED: emergency stop active — manual reset required")
+            return
+        if self.profit_guard.is_halted():
+            logger.info("BLOCKED: daily DD halt or loss cap reached — no new entries today")
+            return
+        if self.profit_guard.is_paused():
+            logger.info("BLOCKED: consecutive loss pause active")
+            return
+
+        # Pre-flight: news skip day
+        try:
+            from scheduler.daily_init import is_news_skip_day
+            today_str = datetime.utcnow().strftime("%Y-%m-%d")
+            if is_news_skip_day(today_str):
+                logger.info("BLOCKED: high-impact news day — no trading today")
+                return
+        except ImportError:
+            pass  # scheduler not available in all contexts
+
         from core.market import fetch_candles_live
         df = fetch_candles_live(self.symbol, "M15", 200)
 

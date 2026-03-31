@@ -74,12 +74,21 @@ class TestEMACross(unittest.TestCase):
             strat._daily_trades = 0
         self.skipTest("No SELL signal found in 50 downtrend seeds")
 
-    def test_max_2_trades_per_day(self):
+    def test_max_3_trades_per_day(self):
         strat = EMACrossStrategy("XAUUSD", mode="backtest")
-        strat._daily_trades = 2
+        strat._daily_trades = 3
         strat._current_date = datetime(2025, 1, 2).date()
         df = self._make_trending_df()
-        # Force the date to match
+        df["time"] = pd.date_range(datetime(2025, 1, 2, 8, 0), periods=len(df), freq="15min")
+        sig = strat.generate_signal(df)
+        self.assertIsNone(sig)
+
+    def test_3rd_trade_requires_positive_pnl(self):
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        strat._daily_trades = 2
+        strat._daily_pnl = -50.0  # negative PnL → 3rd trade blocked
+        strat._current_date = datetime(2025, 1, 2).date()
+        df = self._make_trending_df()
         df["time"] = pd.date_range(datetime(2025, 1, 2, 8, 0), periods=len(df), freq="15min")
         sig = strat.generate_signal(df)
         self.assertIsNone(sig)
