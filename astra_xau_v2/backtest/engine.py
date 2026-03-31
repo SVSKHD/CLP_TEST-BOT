@@ -98,7 +98,8 @@ def run_symbol_backtest(
         if not guard_check["allowed"]:
             continue
 
-        window = df.iloc[max(0, i - 199):i + 1].copy().reset_index(drop=True)
+        # Large window for H4 zone detection (need ~60 H4 candles = 960 M15 candles)
+        window = df.iloc[max(0, i - 999):i + 1].copy().reset_index(drop=True)
 
         signal = scalper.generate_signal(window)
         if signal is None:
