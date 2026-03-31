@@ -11,8 +11,7 @@ SYMBOL_CONFIG = {
         "max_spread_pips": 6.0,
     },
     "XAUEUR": {
-        "enabled": False,
-        "reason": "PF 0.92 — net negative in backtest",
+        "enabled": True,
         "base": "XAU",
         "quote": "EUR",
         "digits": 2,

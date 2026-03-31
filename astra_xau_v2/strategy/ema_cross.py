@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 from strategy.base import Signal
-from core.market import calc_ema, calc_atr
+from core.market import calc_ema, calc_atr, calc_adx
 from core.news_filter import is_news_blocked
 
 logger = logging.getLogger("astra.ema_cross")
@@ -19,6 +19,7 @@ ATR_PERIOD = 14
 ATR_MIN_PIPS = 18
 RANGING_PIPS = 5
 RANGING_LOOKBACK = 3
+ADX_MIN = 20  # H1 ADX must be above this for any trade
 SL_ATR_MULT = 1.5
 TP_ATR_MULT = 2.5
 SL_MAX_PIPS = 80
@@ -59,9 +60,9 @@ class EMACrossStrategy:
         if self._daily_trades == MAX_TRADES_PER_DAY - 1 and self._daily_pnl <= 0:
             return None
 
-        # Session filter (skip in backtest — synthetic data has no TZ context)
-        if self.mode != "backtest":
-            hour = candle_time.hour if hasattr(candle_time, "hour") else 0
+        # Session filter — always applied (London + NY only)
+        if hasattr(candle_time, "hour"):
+            hour = candle_time.hour
             minute = candle_time.minute if hasattr(candle_time, "minute") else 0
             time_frac = hour + minute / 60.0
             if not (LONDON_START <= time_frac < LONDON_END or NY_START <= time_frac < NY_END):
@@ -129,6 +130,13 @@ class EMACrossStrategy:
             return None
         if direction == "SELL" and h1_close >= h1_ema_val:
             logger.debug(f"{self.symbol} SKIP: SELL cross but H1 above EMA50 ({h1_close:.2f} > {h1_ema_val:.2f})")
+            return None
+
+        # H1 ADX trend strength gate — must show trending market
+        h1_adx = calc_adx(h1, 14)
+        h1_adx_val = h1_adx.iloc[-1]
+        if h1_adx_val < ADX_MIN:
+            logger.debug(f"{self.symbol} SKIP: H1 ADX {h1_adx_val:.1f} < {ADX_MIN} (no trend)")
             return None
 
         # SL/TP calculation
