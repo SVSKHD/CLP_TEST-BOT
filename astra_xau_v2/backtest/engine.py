@@ -101,7 +101,7 @@ def run_symbol_backtest(
         # Large window for H4 zone detection (need ~60 H4 candles = 960 M15 candles)
         window = df.iloc[max(0, i - 999):i + 1].copy().reset_index(drop=True)
 
-        signal = scalper.generate_signal(window)
+        signal = scalper.generate_signal(window, current_time=candle_time)
         if signal is None:
             continue
 
@@ -131,6 +131,7 @@ def run_symbol_backtest(
         profit_guard.update_equity(equity)
         profit_guard.update_realized(symbol, result.pnl_usd, abs(result.pips),
                                      trade_time=result.exit_time)
+        scalper.record_trade_result(result.result, trade_time=result.exit_time)
 
         # Check Funding Pips drawdown limits
         dd_check = profit_guard.check_drawdown(equity)

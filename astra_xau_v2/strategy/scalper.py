@@ -1,4 +1,7 @@
 import logging
+from datetime import datetime
+from typing import Optional
+
 import pandas as pd
 
 from strategy.base import BaseStrategy, Signal
@@ -15,8 +18,11 @@ class Scalper(BaseStrategy):
     def name(self) -> str:
         return "ConfluenceScalper"
 
-    def generate_signal(self, df: pd.DataFrame) -> Signal:
-        return self.scorer.evaluate(df)
+    def generate_signal(self, df: pd.DataFrame, current_time: datetime = None) -> Optional[Signal]:
+        return self.scorer.evaluate(df, current_time=current_time)
+
+    def record_trade_result(self, result: str, trade_time: datetime = None):
+        self.scorer.record_trade_result(result, trade_time)
 
 
 if __name__ == "__main__":
