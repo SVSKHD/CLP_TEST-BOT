@@ -33,15 +33,14 @@ def mt5_retry(max_retries=3, backoff=5):
     return decorator
 
 
-@mt5_retry()
-def initialize(server: str, login: int, password: str) -> bool:
+def initialize() -> bool:
     mt5 = _get_mt5()
     if not mt5.initialize():
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
-    authorized = mt5.login(login, password=password, server=server)
-    if not authorized:
-        raise RuntimeError(f"MT5 login failed: {mt5.last_error()}")
-    logger.info(f"MT5 connected: server={server}, login={login}")
+    info = mt5.account_info()
+    if info is None:
+        raise RuntimeError(f"MT5 not logged in: {mt5.last_error()}")
+    logger.info(f"MT5 connected: account={info.login}, server={info.server}")
     return True
 
 
@@ -262,12 +261,8 @@ def copy_rates_range(symbol: str, timeframe_str: str, date_from, date_to):
 
 
 if __name__ == "__main__":
-    from config.settings import MT5_SERVER, MT5_LOGIN, MT5_PASSWORD
-    if MT5_SERVER and MT5_LOGIN:
-        initialize(MT5_SERVER, MT5_LOGIN, MT5_PASSWORD)
-        print(get_account_info())
-        for sym in ["XAUUSD", "XAUEUR", "XAUGBP"]:
-            print(f"{sym}: {get_symbol_info(sym)}")
-        shutdown()
-    else:
-        print("MT5 credentials not configured. Set MT5_SERVER, MT5_LOGIN, MT5_PASSWORD in .env")
+    initialize()
+    print(get_account_info())
+    for sym in ["XAUUSD", "XAUEUR", "XAUGBP"]:
+        print(f"{sym}: {get_symbol_info(sym)}")
+    shutdown()
