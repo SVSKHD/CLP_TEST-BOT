@@ -1,0 +1,8 @@
+.env
+data/state/
+data/history/
+data/backtest_results/
+logs/
+__pycache__/
+*.pyc
+.DS_Store

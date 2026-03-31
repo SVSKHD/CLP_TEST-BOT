@@ -1,0 +1,13 @@
+MetaTrader5
+pandas
+numpy
+ta
+requests
+pymongo
+python-dotenv
+APScheduler
+matplotlib
+mplfinance
+plotly
+dash
+rich
