@@ -9,7 +9,7 @@ logger = logging.getLogger("astra.simulator")
 
 PIP_SIZE = 0.1
 TRAIL_TRIGGER_PIPS = 50
-TRAIL_DISTANCE_PIPS = 15
+TRAIL_DISTANCE_PIPS = 25
 
 
 @dataclass

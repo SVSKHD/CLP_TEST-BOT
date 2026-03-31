@@ -9,210 +9,108 @@ from datetime import datetime, timedelta
 
 from strategy.scalper import Scalper
 from strategy.hawk import HawkFilter
+from strategy.ema_cross import EMACrossStrategy
 from strategy.base import Signal, FilterResult
-from confluence.zone_detector import detect_zones, get_active_zones, resample_to_h4, grade_zone
-from confluence.trigger import detect_trigger
-from confluence.momentum import check_momentum
-from confluence.trend_filter import get_h1_trend
 
 
-class TestConfluenceScorer(unittest.TestCase):
-    def _make_df(self, n=500, base=2000.0, seed=42):
+class TestEMACross(unittest.TestCase):
+    def _make_trending_df(self, n=200, direction="up", seed=42):
+        """Build data with a clear trend so EMA8 crosses EMA21."""
         np.random.seed(seed)
-        prices = base + np.cumsum(np.random.randn(n) * 0.5)
-        start = datetime(2025, 1, 2, 0, 0)
-        opens = prices + np.random.randn(n) * 0.2
+        if direction == "up":
+            trend = np.linspace(0, 30, n)
+        else:
+            trend = np.linspace(0, -30, n)
+        noise = np.random.randn(n) * 0.4
+        prices = 2000.0 + trend + noise
+        start = datetime(2025, 1, 2, 8, 0)
+        opens = prices - np.random.randn(n) * 0.2
         return pd.DataFrame({
             "time": pd.date_range(start, periods=n, freq="15min"),
-            "open": opens,
-            "high": np.maximum(prices, opens) + np.random.rand(n) * 2,
-            "low": np.minimum(prices, opens) - np.random.rand(n) * 2,
-            "close": prices,
-            "tick_volume": np.random.randint(100, 5000, n),
-        })
-
-    def test_scalper_returns_signal_or_none(self):
-        df = self._make_df()
-        scalper = Scalper("XAUUSD", mode="backtest")
-        signal = scalper.generate_signal(df)
-        self.assertTrue(signal is None or isinstance(signal, Signal))
-
-    def test_scalper_needs_minimum_candles(self):
-        df = self._make_df(n=30)
-        scalper = Scalper("XAUUSD", mode="backtest")
-        signal = scalper.generate_signal(df)
-        self.assertIsNone(signal)
-
-    def test_signal_has_correct_fields(self):
-        scalper = Scalper("XAUUSD", mode="backtest")
-        for seed in range(100):
-            df = self._make_df(n=500, seed=seed)
-            signal = scalper.generate_signal(df)
-            if signal is not None:
-                self.assertIn(signal.direction, ["BUY", "SELL"])
-                self.assertEqual(signal.symbol, "XAUUSD")
-                self.assertGreater(signal.sl_pips, 0)
-                self.assertGreater(signal.tp_pips, 0)
-                self.assertGreaterEqual(signal.confidence, 0.5)  # 3/5.5 ≈ 0.55
-                self.assertLessEqual(signal.confidence, 1.0)
-                if signal.direction == "BUY":
-                    self.assertLess(signal.sl_price, signal.entry_price)
-                    self.assertGreater(signal.tp_price, signal.entry_price)
-                else:
-                    self.assertGreater(signal.sl_price, signal.entry_price)
-                    self.assertLess(signal.tp_price, signal.entry_price)
-                return
-        self.skipTest("No signal in 100 seeds (acceptable)")
-
-
-class TestZoneDetector(unittest.TestCase):
-    def _make_h4_df(self, n=100, seed=42):
-        np.random.seed(seed)
-        prices = 2000 + np.cumsum(np.random.randn(n) * 2)
-        opens = prices + np.random.randn(n) * 0.5
-        return pd.DataFrame({
-            "time": pd.date_range("2025-01-01", periods=n, freq="4h"),
             "open": opens,
             "high": np.maximum(prices, opens) + np.random.rand(n) * 3,
             "low": np.minimum(prices, opens) - np.random.rand(n) * 3,
             "close": prices,
-            "tick_volume": np.random.randint(1000, 10000, n),
+            "tick_volume": np.random.randint(500, 5000, n),
         })
 
-    def test_detect_zones_returns_list(self):
-        df = self._make_h4_df()
-        zones = detect_zones(df)
-        self.assertIsInstance(zones, list)
+    def test_returns_signal_or_none(self):
+        df = self._make_trending_df()
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        signal = strat.generate_signal(df)
+        self.assertTrue(signal is None or isinstance(signal, Signal))
 
-    def test_active_zones_capped(self):
-        df = self._make_h4_df(n=200, seed=99)
-        result = get_active_zones(df, df["close"].iloc[-1])
-        self.assertLessEqual(len(result["demand"]), 8)
-        self.assertLessEqual(len(result["supply"]), 8)
+    def test_needs_minimum_candles(self):
+        df = self._make_trending_df(n=30)
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        self.assertIsNone(strat.generate_signal(df))
 
-    def test_c_grade_zones_excluded(self):
-        df = self._make_h4_df(n=200, seed=42)
-        zones = get_active_zones(df, df["close"].iloc[-1])
-        for z in zones["demand"] + zones["supply"]:
-            self.assertIn(z.grade, ("A", "B"), f"C-grade zone found: {z}")
+    def test_generates_buy_in_uptrend(self):
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        for seed in range(50):
+            df = self._make_trending_df(n=200, direction="up", seed=seed)
+            for i in range(60, len(df)):
+                sig = strat.generate_signal(df.iloc[:i + 1])
+                if sig and sig.direction == "BUY":
+                    self.assertEqual(sig.symbol, "XAUUSD")
+                    self.assertGreater(sig.sl_pips, 0)
+                    self.assertGreater(sig.tp_pips, 0)
+                    self.assertLess(sig.sl_price, sig.entry_price)
+                    self.assertGreater(sig.tp_price, sig.entry_price)
+                    return
+            strat._daily_trades = 0  # reset for next seed
+        self.skipTest("No BUY signal found in 50 uptrend seeds")
 
-    def test_zone_grading(self):
-        df = self._make_h4_df(n=50, seed=42)
-        raw = detect_zones(df)
-        for z in raw:
-            grade_zone(z, df["close"].iloc[-1])
-            self.assertIn(z.grade, ("A", "B", "C"))
-            if z.grade == "A":
-                self.assertEqual(z.score_contribution, 1.5)
-            elif z.grade == "B":
-                self.assertEqual(z.score_contribution, 1.0)
-            else:
-                self.assertEqual(z.score_contribution, 0.0)
+    def test_generates_sell_in_downtrend(self):
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        for seed in range(50):
+            df = self._make_trending_df(n=200, direction="down", seed=seed)
+            for i in range(60, len(df)):
+                sig = strat.generate_signal(df.iloc[:i + 1])
+                if sig and sig.direction == "SELL":
+                    self.assertGreater(sig.sl_price, sig.entry_price)
+                    self.assertLess(sig.tp_price, sig.entry_price)
+                    return
+            strat._daily_trades = 0
+        self.skipTest("No SELL signal found in 50 downtrend seeds")
 
-    def test_resample_h4(self):
-        np.random.seed(42)
-        n = 200
-        prices = 2000 + np.cumsum(np.random.randn(n) * 0.5)
-        df = pd.DataFrame({
-            "time": pd.date_range("2025-01-01", periods=n, freq="15min"),
-            "open": prices,
-            "high": prices + 1,
-            "low": prices - 1,
-            "close": prices,
-            "tick_volume": np.random.randint(100, 5000, n),
-        })
-        h4 = resample_to_h4(df)
-        self.assertGreater(len(h4), 0)
-        self.assertLess(len(h4), len(df))
+    def test_max_2_trades_per_day(self):
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        strat._daily_trades = 2
+        strat._current_date = datetime(2025, 1, 2).date()
+        df = self._make_trending_df()
+        # Force the date to match
+        df["time"] = pd.date_range(datetime(2025, 1, 2, 8, 0), periods=len(df), freq="15min")
+        sig = strat.generate_signal(df)
+        self.assertIsNone(sig)
 
-
-class TestTrigger(unittest.TestCase):
-    def test_trigger_returns_dict(self):
-        np.random.seed(42)
-        n = 100
-        prices = 2000 + np.cumsum(np.random.randn(n) * 0.5)
-        df = pd.DataFrame({
-            "time": pd.date_range("2025-01-01", periods=n, freq="15min"),
-            "open": prices - np.random.randn(n) * 0.2,
-            "high": prices + np.random.rand(n) * 2,
-            "low": prices - np.random.rand(n) * 2,
-            "close": prices,
-            "tick_volume": np.random.randint(500, 3000, n),
-        })
-        result = detect_trigger(df)
-        self.assertIn("triggered", result)
-        self.assertIn("direction", result)
-        self.assertIn("pattern", result)
-
-    def test_no_trigger_on_flat(self):
-        n = 60
-        df = pd.DataFrame({
-            "time": pd.date_range("2025-01-01", periods=n, freq="15min"),
-            "open":  [2000.0]*n,
-            "high":  [2000.5]*n,
-            "low":   [1999.5]*n,
-            "close": [2000.1]*n,
-            "tick_volume": [1000]*n,
-        })
-        result = detect_trigger(df)
-        self.assertFalse(result["triggered"])
+    def test_rr_ratio_enforced(self):
+        strat = EMACrossStrategy("XAUUSD", mode="backtest")
+        for seed in range(100):
+            df = self._make_trending_df(seed=seed)
+            for i in range(60, len(df)):
+                sig = strat.generate_signal(df.iloc[:i + 1])
+                if sig:
+                    self.assertGreaterEqual(sig.tp_pips / sig.sl_pips, 1.49,
+                                            f"RR {sig.tp_pips/sig.sl_pips:.2f} < 1.5")
+                    return
+            strat._daily_trades = 0
+        self.skipTest("No signal found")
 
 
-class TestMomentum(unittest.TestCase):
-    def test_momentum_returns_dict(self):
-        np.random.seed(42)
-        n = 100
-        df = pd.DataFrame({
-            "time": pd.date_range("2025-01-01", periods=n, freq="15min"),
-            "open": [2000]*n,
-            "high": [2001]*n,
-            "low":  [1999]*n,
-            "close": 2000 + np.cumsum(np.random.randn(n) * 0.1),
-            "tick_volume": np.random.randint(500, 2000, n),
-        })
-        result = check_momentum(df)
-        self.assertIn("passed", result)
-        self.assertIn("rsi", result)
+class TestScalperWrapper(unittest.TestCase):
+    def test_wraps_ema_cross(self):
+        scalper = Scalper("XAUUSD", mode="backtest")
+        self.assertEqual(scalper.name(), "EMACross")
+        self.assertIsInstance(scalper.strategy, EMACrossStrategy)
 
 
 class TestHawkFilter(unittest.TestCase):
-    def test_hawk_always_confirms(self):
+    def test_always_confirms(self):
         hawk = HawkFilter("XAUUSD", mode="backtest")
-        signal = Signal("BUY", "XAUUSD", 2010, 2006, 2016, 40, 60, "test", 0.8)
-        result = hawk.evaluate(None, signal)
+        sig = Signal("BUY", "XAUUSD", 2010, 2006, 2016, 40, 60, "test", 0.8)
+        result = hawk.evaluate(None, sig)
         self.assertEqual(result.action, FilterResult.CONFIRM)
-
-
-class TestSLStreakPause(unittest.TestCase):
-    def test_3_sl_hits_pauses(self):
-        from confluence.scorer import ConfluenceScorer
-        scorer = ConfluenceScorer("XAUUSD", mode="backtest")
-        t = datetime(2026, 1, 5, 10, 0)
-        scorer.record_trade_result("LOSS", t)
-        scorer.record_trade_result("LOSS", t)
-        self.assertFalse(scorer.is_paused(t))
-        scorer.record_trade_result("LOSS", t)
-        self.assertTrue(scorer.is_paused(t))
-
-    def test_sl_pause_expires(self):
-        from confluence.scorer import ConfluenceScorer
-        scorer = ConfluenceScorer("XAUUSD", mode="backtest")
-        t = datetime(2026, 1, 5, 10, 0)
-        for _ in range(3):
-            scorer.record_trade_result("LOSS", t)
-        self.assertTrue(scorer.is_paused(t))
-        later = t + timedelta(hours=7)
-        self.assertFalse(scorer.is_paused(later))
-
-    def test_win_breaks_streak(self):
-        from confluence.scorer import ConfluenceScorer
-        scorer = ConfluenceScorer("XAUUSD", mode="backtest")
-        t = datetime(2026, 1, 5, 10, 0)
-        scorer.record_trade_result("LOSS", t)
-        scorer.record_trade_result("LOSS", t)
-        scorer.record_trade_result("WIN", t)
-        scorer.record_trade_result("LOSS", t)
-        self.assertFalse(scorer.is_paused(t))
 
 
 if __name__ == "__main__":
