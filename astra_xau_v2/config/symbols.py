@@ -11,7 +11,8 @@ SYMBOL_CONFIG = {
         "max_spread_pips": 6.0,
     },
     "XAUEUR": {
-        "enabled": True,
+        "enabled": False,
+        "reason": "disabled — XAUUSD only",
         "base": "XAU",
         "quote": "EUR",
         "digits": 2,

@@ -108,10 +108,11 @@ def generate_synthetic_data(symbol: str, start: str, end: str,
         raise ValueError(f"No candles for {start} to {end}")
 
     # Ornstein-Uhlenbeck mean-reverting process for realistic S/R bounces
-    # Tuned for XAU M15: price oscillates within bands, bounces off S/R
-    # Higher reversion speed = more reliable S/R bounces = higher win rate
-    mean_reversion_speed = 0.015
-    volatility_scale = 0.0013
+    # Scale volatility by timeframe — M5 needs higher per-bar vol than M15
+    vol_scale_map = {"M1": 0.0008, "M5": 0.0018, "M15": 0.0013, "M30": 0.0010,
+                     "H1": 0.0008, "H4": 0.0006, "D1": 0.0004}
+    mean_reversion_speed = 0.010
+    volatility_scale = vol_scale_map.get(timeframe, 0.0013)
     trend_drift = 0.000008
 
     log_prices = np.zeros(n)
@@ -125,14 +126,27 @@ def generate_synthetic_data(symbol: str, start: str, end: str,
                          + shock)
 
     prices = base_price * np.exp(log_prices)
-    volatility = np.random.uniform(0.8, 3.5, n)
+    # Close tracks next price (momentum) so candle bodies are strong
+    # close[i] is biased toward prices[i+1] direction
+    closes = np.zeros(n)
+    opens = prices.copy()
+    for j in range(n - 1):
+        direction = prices[j + 1] - prices[j]
+        closes[j] = prices[j] + direction * np.random.uniform(0.5, 1.0)
+    closes[-1] = prices[-1] + np.random.randn() * 0.3
+
+    # Wicks: small relative to body to keep body ratio > 60%
+    wick_up = np.abs(np.random.randn(n)) * 0.2
+    wick_down = np.abs(np.random.randn(n)) * 0.2
+    highs = np.maximum(opens, closes) + wick_up
+    lows = np.minimum(opens, closes) - wick_down
 
     df = pd.DataFrame({
         "time": times,
-        "open": prices,
-        "high": prices + volatility,
-        "low": prices - volatility,
-        "close": prices + np.random.randn(n) * 0.3,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
         "tick_volume": np.random.randint(100, 10000, n),
         "spread": np.random.randint(15, 40, n),
     })
