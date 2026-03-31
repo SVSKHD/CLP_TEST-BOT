@@ -93,6 +93,33 @@ def calc_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(span=period, adjust=False).mean()
 
 
+def calc_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+    prev_close = close.shift(1)
+
+    plus_dm = high - prev_high
+    minus_dm = prev_low - low
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    atr = tr.ewm(span=period, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr
+    minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.inf)
+    adx = dx.ewm(span=period, adjust=False).mean()
+    return adx
+
+
 def get_current_spread_pips(symbol: str) -> float:
     from core.mt5_client import get_symbol_info
     info = get_symbol_info(symbol)
