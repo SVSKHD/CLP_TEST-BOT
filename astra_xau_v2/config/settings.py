@@ -14,8 +14,8 @@ DAILY_FLOOR = 500
 DAILY_CAP = 3000
 DAILY_PIPS_COVERAGE = 200
 
-SCALPER_SL_PIPS = 40
-SCALPER_TP_PIPS = 75
+SCALPER_SL_PIPS = 45   # used when no zone-based SL available
+SCALPER_TP_PIPS = 55   # used when no zone-based TP available
 
 RISK_PER_TRADE_PCT = 0.005  # 0.5% — halved for more runway before DD limits
 MAX_CONCURRENT_TRADES = 1
@@ -37,9 +37,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 BACKTEST_START = os.getenv("BACKTEST_START", "2025-01-01")
 BACKTEST_END = os.getenv("BACKTEST_END", "2025-12-31")
 BACKTEST_TIMEFRAME = os.getenv("BACKTEST_TIMEFRAME", "M15")
-BACKTEST_SPREAD_PIPS = float(os.getenv("BACKTEST_SPREAD_PIPS", 1.2))
+BACKTEST_SPREAD_PIPS = float(os.getenv("BACKTEST_SPREAD_PIPS", 0.8))
 BACKTEST_SLIPPAGE_PIPS = float(os.getenv("BACKTEST_SLIPPAGE_PIPS", 0.1))
-BACKTEST_COMMISSION_USD = float(os.getenv("BACKTEST_COMMISSION_USD", 3.5))
+BACKTEST_COMMISSION_USD = float(os.getenv("BACKTEST_COMMISSION_USD", 1.5))
 
 
 if __name__ == "__main__":
