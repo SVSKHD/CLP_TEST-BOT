@@ -19,9 +19,11 @@ ATR_PERIOD = 14
 ATR_MIN_PIPS = 25
 RANGING_PIPS = 5
 RANGING_LOOKBACK = 3
-SL_ATR_MULT = 0.7
-TP_ATR_MULT = 1.0
-MIN_RR = 1.3
+SL_ATR_MULT = 1.5
+TP_ATR_MULT = 2.5
+SL_MAX_PIPS = 80
+SL_MIN_PIPS = 25
+MIN_RR = 1.5
 MAX_TRADES_PER_DAY = 2
 
 LONDON_START = 7
@@ -118,19 +120,22 @@ class EMACrossStrategy:
         candle_high = df["high"].iloc[-1]
 
         if direction == "BUY":
-            sl_price = candle_low - SL_ATR_MULT * atr_val
-            sl_pips = (entry - sl_price) / PIP_SIZE
-            tp_raw = TP_ATR_MULT * atr_val
-            tp_pips = tp_raw / PIP_SIZE
-            # Enforce minimum RR
+            raw_sl = candle_low - SL_ATR_MULT * atr_val
+            sl_pips = (entry - raw_sl) / PIP_SIZE
+            sl_pips = max(SL_MIN_PIPS, min(sl_pips, SL_MAX_PIPS))
+            sl_price = entry - sl_pips * PIP_SIZE
+
+            tp_pips = TP_ATR_MULT * atr_val / PIP_SIZE
             if tp_pips < sl_pips * MIN_RR:
                 tp_pips = sl_pips * MIN_RR
             tp_price = entry + tp_pips * PIP_SIZE
         else:
-            sl_price = candle_high + SL_ATR_MULT * atr_val
-            sl_pips = (sl_price - entry) / PIP_SIZE
-            tp_raw = TP_ATR_MULT * atr_val
-            tp_pips = tp_raw / PIP_SIZE
+            raw_sl = candle_high + SL_ATR_MULT * atr_val
+            sl_pips = (raw_sl - entry) / PIP_SIZE
+            sl_pips = max(SL_MIN_PIPS, min(sl_pips, SL_MAX_PIPS))
+            sl_price = entry + sl_pips * PIP_SIZE
+
+            tp_pips = TP_ATR_MULT * atr_val / PIP_SIZE
             if tp_pips < sl_pips * MIN_RR:
                 tp_pips = sl_pips * MIN_RR
             tp_price = entry - tp_pips * PIP_SIZE

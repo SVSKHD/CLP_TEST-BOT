@@ -8,8 +8,8 @@ from config.settings import BACKTEST_SPREAD_PIPS, BACKTEST_SLIPPAGE_PIPS, BACKTE
 logger = logging.getLogger("astra.simulator")
 
 PIP_SIZE = 0.1
-TRAIL_TRIGGER_PIPS = 50
-TRAIL_DISTANCE_PIPS = 25
+TRAIL_TRIGGER_PIPS = 9999   # effectively disabled — let SL/TP resolve naturally
+TRAIL_DISTANCE_PIPS = 40
 
 
 @dataclass
