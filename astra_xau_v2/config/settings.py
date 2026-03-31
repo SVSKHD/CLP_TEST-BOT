@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SYMBOLS = ["XAUUSD", "XAUEUR"]  # XAUGBP suspended pending strategy calibration
+SYMBOLS = ["XAUUSD"]  # XAUEUR disabled: PF 0.92, net -$1174. XAUGBP suspended.
 
 ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", 50000))
 PROP_FIRM_MAX_DAILY_DD = 0.05

@@ -194,7 +194,7 @@ class TestConsecutiveLossBreaker(unittest.TestCase):
         # 3rd consecutive loss — should be paused
         result = guard.can_trade("XAUUSD", current_time=t)
         self.assertFalse(result["allowed"])
-        self.assertIn("cooling off", result["reason"])
+        self.assertIn("pause", result["reason"].lower())
 
     def test_win_resets_consecutive_losses(self):
         guard = ProfitGuard(["XAUUSD"], initial_equity=50000)

@@ -46,6 +46,30 @@ _runner = None
 _dashboard = None
 _live_chart = None
 
+# --- High-impact news day skip list ---
+HIGH_IMPACT_NEWS_DAYS = []
+
+
+def load_news_skip_days(news_csv_path: str) -> list:
+    """
+    Expects a CSV with column 'date' (YYYY-MM-DD) and 'event' (string).
+    Filters for: CPI, NFP, FOMC, Fed, Nonfarm, Interest Rate.
+    Returns list of date strings to skip entirely.
+    """
+    try:
+        import pandas as pd
+        df = pd.read_csv(news_csv_path)
+        keywords = ['CPI', 'NFP', 'FOMC', 'Fed', 'Nonfarm', 'Interest Rate']
+        mask = df['event'].str.contains('|'.join(keywords), case=False, na=False)
+        return df[mask]['date'].tolist()
+    except Exception as e:
+        logger.warning(f"NEWS_CALENDAR not configured — skipping news filter: {e}")
+        return []
+
+
+def is_news_skip_day(date_str: str) -> bool:
+    return date_str in HIGH_IMPACT_NEWS_DAYS
+
 
 def daily_reset():
     global _runner, _dashboard, _live_chart
@@ -74,8 +98,23 @@ def daily_reset():
     except Exception as e:
         logger.warning(f"Could not fetch live equity: {e}")
 
+    # Load news calendar if available
+    global HIGH_IMPACT_NEWS_DAYS
+    news_csv = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "news_calendar.csv")
+    if os.path.exists(news_csv):
+        HIGH_IMPACT_NEWS_DAYS = load_news_skip_days(news_csv)
+        logger.info(f"Loaded {len(HIGH_IMPACT_NEWS_DAYS)} high-impact news days")
+    else:
+        logger.warning("NEWS_CALENDAR not configured — skipping news filter")
+
     notifier = Notifier()
     notifier.send_day_start(equity, 0, SYMBOLS)
+
+    # Check if today is a high-impact news day
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    if is_news_skip_day(today_str):
+        logger.warning(f"HIGH_IMPACT_NEWS_DAY: {today_str} — halting new entries for the day")
+        notifier.send(f"HIGH_IMPACT_NEWS_DAY: {today_str} — no trading today", level="warn")
 
     _runner = Runner(SYMBOLS, mode="live")
     _runner.set_notifier(notifier)
@@ -83,6 +122,10 @@ def daily_reset():
     profit_guard = _runner.profit_guard
     profit_guard.on_freeze(lambda sym, pnl: notifier.send_freeze(sym, pnl))
     profit_guard.on_global_cap(lambda total: notifier.send_global_cap(total))
+
+    # If news skip day, halt the profit guard before any trading starts
+    if is_news_skip_day(today_str):
+        profit_guard.halt_new_entries = True
 
     _runner.start(interval=5.0)
     logger.info("Runner started for all symbols")
