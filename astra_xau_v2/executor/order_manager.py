@@ -4,7 +4,7 @@ from config.settings import MAGIC_NUMBER
 logger = logging.getLogger("astra.order_manager")
 
 TRAIL_TRIGGER_PIPS = 50
-TRAIL_DISTANCE_PIPS = 15
+TRAIL_DISTANCE_PIPS = 25
 PIP_SIZE = 0.1
 
 
