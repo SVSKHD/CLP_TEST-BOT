@@ -6,7 +6,7 @@ logger = logging.getLogger("astra.momentum")
 
 RSI_LOW = 35
 RSI_HIGH = 65
-VOLUME_MULTIPLIER = 1.2
+VOLUME_MULTIPLIER = 1.0
 VOLUME_LOOKBACK = 20
 
 

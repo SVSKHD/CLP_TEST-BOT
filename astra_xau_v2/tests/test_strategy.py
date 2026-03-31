@@ -5,12 +5,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import unittest
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from strategy.scalper import Scalper
 from strategy.hawk import HawkFilter
 from strategy.base import Signal, FilterResult
-from confluence.zone_detector import detect_zones, get_active_zones, resample_to_h4
+from confluence.zone_detector import detect_zones, get_active_zones, resample_to_h4, grade_zone
 from confluence.trigger import detect_trigger
 from confluence.momentum import check_momentum
 from confluence.trend_filter import get_h1_trend
@@ -53,7 +53,7 @@ class TestConfluenceScorer(unittest.TestCase):
                 self.assertEqual(signal.symbol, "XAUUSD")
                 self.assertGreater(signal.sl_pips, 0)
                 self.assertGreater(signal.tp_pips, 0)
-                self.assertGreaterEqual(signal.confidence, 0.6)  # 3/5 = 0.6
+                self.assertGreaterEqual(signal.confidence, 0.5)  # 3/5.5 ≈ 0.55
                 self.assertLessEqual(signal.confidence, 1.0)
                 if signal.direction == "BUY":
                     self.assertLess(signal.sl_price, signal.entry_price)
@@ -87,8 +87,27 @@ class TestZoneDetector(unittest.TestCase):
     def test_active_zones_capped(self):
         df = self._make_h4_df(n=200, seed=99)
         result = get_active_zones(df, df["close"].iloc[-1])
-        self.assertLessEqual(len(result["demand"]), 4)
-        self.assertLessEqual(len(result["supply"]), 4)
+        self.assertLessEqual(len(result["demand"]), 8)
+        self.assertLessEqual(len(result["supply"]), 8)
+
+    def test_c_grade_zones_excluded(self):
+        df = self._make_h4_df(n=200, seed=42)
+        zones = get_active_zones(df, df["close"].iloc[-1])
+        for z in zones["demand"] + zones["supply"]:
+            self.assertIn(z.grade, ("A", "B"), f"C-grade zone found: {z}")
+
+    def test_zone_grading(self):
+        df = self._make_h4_df(n=50, seed=42)
+        raw = detect_zones(df)
+        for z in raw:
+            grade_zone(z, df["close"].iloc[-1])
+            self.assertIn(z.grade, ("A", "B", "C"))
+            if z.grade == "A":
+                self.assertEqual(z.score_contribution, 1.5)
+            elif z.grade == "B":
+                self.assertEqual(z.score_contribution, 1.0)
+            else:
+                self.assertEqual(z.score_contribution, 0.0)
 
     def test_resample_h4(self):
         np.random.seed(42)
@@ -162,6 +181,38 @@ class TestHawkFilter(unittest.TestCase):
         signal = Signal("BUY", "XAUUSD", 2010, 2006, 2016, 40, 60, "test", 0.8)
         result = hawk.evaluate(None, signal)
         self.assertEqual(result.action, FilterResult.CONFIRM)
+
+
+class TestSLStreakPause(unittest.TestCase):
+    def test_3_sl_hits_pauses(self):
+        from confluence.scorer import ConfluenceScorer
+        scorer = ConfluenceScorer("XAUUSD", mode="backtest")
+        t = datetime(2026, 1, 5, 10, 0)
+        scorer.record_trade_result("LOSS", t)
+        scorer.record_trade_result("LOSS", t)
+        self.assertFalse(scorer.is_paused(t))
+        scorer.record_trade_result("LOSS", t)
+        self.assertTrue(scorer.is_paused(t))
+
+    def test_sl_pause_expires(self):
+        from confluence.scorer import ConfluenceScorer
+        scorer = ConfluenceScorer("XAUUSD", mode="backtest")
+        t = datetime(2026, 1, 5, 10, 0)
+        for _ in range(3):
+            scorer.record_trade_result("LOSS", t)
+        self.assertTrue(scorer.is_paused(t))
+        later = t + timedelta(hours=7)
+        self.assertFalse(scorer.is_paused(later))
+
+    def test_win_breaks_streak(self):
+        from confluence.scorer import ConfluenceScorer
+        scorer = ConfluenceScorer("XAUUSD", mode="backtest")
+        t = datetime(2026, 1, 5, 10, 0)
+        scorer.record_trade_result("LOSS", t)
+        scorer.record_trade_result("LOSS", t)
+        scorer.record_trade_result("WIN", t)
+        scorer.record_trade_result("LOSS", t)
+        self.assertFalse(scorer.is_paused(t))
 
 
 if __name__ == "__main__":
