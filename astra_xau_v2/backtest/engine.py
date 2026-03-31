@@ -93,7 +93,8 @@ def run_symbol_backtest(
         if i < skip_until_idx:
             continue
 
-        guard_check = profit_guard.can_trade(symbol)
+        candle_time = df.iloc[i]["time"]
+        guard_check = profit_guard.can_trade(symbol, current_time=candle_time)
         if not guard_check["allowed"]:
             continue
 
@@ -127,7 +128,8 @@ def run_symbol_backtest(
         trades.append(result)
         equity += result.pnl_usd
         profit_guard.update_equity(equity)
-        profit_guard.update_realized(symbol, result.pnl_usd, abs(result.pips))
+        profit_guard.update_realized(symbol, result.pnl_usd, abs(result.pips),
+                                     trade_time=result.exit_time)
 
         # Check Funding Pips drawdown limits
         dd_check = profit_guard.check_drawdown(equity)
